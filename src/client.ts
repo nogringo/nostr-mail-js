@@ -438,7 +438,7 @@ export class NostrMailClient {
       blossomPromises.push(...this.blossomServers.map(async (server) => {
         try {
           const blossom = createBlossomClient(server, this.secretKey);
-          await blossom.deleteBlob(hash);
+          await blossom.delete(hash);
         } catch (e) {
           // Ignore individual blossom server errors
         }
