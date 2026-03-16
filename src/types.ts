@@ -20,6 +20,7 @@ export interface Email {
   isRead: boolean;
   isStarred: boolean;
   folder: string; // 'inbox', 'trash', 'archive', etc.
+  mime: string; // The raw MIME content
   event: Event; // The original kind 1301 event (decrypted)
 }
 

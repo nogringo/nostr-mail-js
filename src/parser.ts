@@ -52,6 +52,7 @@ export class EmailParser {
       isRead,
       isStarred,
       folder,
+      mime: mimeToParse,
       event,
     };
   }
