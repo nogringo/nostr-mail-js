@@ -123,7 +123,9 @@ export class NostrMailClient {
   async sendEmail(options: SendEmailOptions): Promise<void> {
     await this.ensureRelays();
     const fromAddress = `${nip19.npubEncode(this.pubkey)}@nostr`;
-    const mime = this.composer.composeMime(options, fromAddress);
+    
+    // Use provided MIME or compose a new one
+    const mime = options.mime || this.composer.composeMime(options, fromAddress);
 
     const recipient = await this.resolveRecipient(options.to);
     

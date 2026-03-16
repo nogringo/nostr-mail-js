@@ -38,6 +38,7 @@ export interface SendEmailOptions {
   html?: string;
   attachments?: Attachment[];
   selfCopy?: boolean; // Default to true, send a copy to oneself
+  mime?: string; // Optional raw MIME content
 }
 
 export enum MailFolder {
