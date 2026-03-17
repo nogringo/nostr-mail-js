@@ -1,4 +1,4 @@
-# nostr-mail-js
+# nostr-mail
 
 A JavaScript library for Nostr-based email.
 
