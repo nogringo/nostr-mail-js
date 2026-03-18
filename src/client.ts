@@ -1,13 +1,13 @@
-import { 
+import {
   finalizeEvent,
-  getPublicKey, 
+  getPublicKey,
 } from 'nostr-tools/pure';
 import { SimplePool, useWebSocketImplementation } from 'nostr-tools/pool';
 import { Filter } from 'nostr-tools/filter';
 import * as nip19 from 'nostr-tools/nip19';
 import * as nip05 from 'nostr-tools/nip05';
-import { 
-  wrapEvent, 
+import {
+  wrapEvent,
   unwrapEvent,
 } from 'nostr-tools/nip59';
 import { EmailParser } from './parser.js';
@@ -43,8 +43,8 @@ export class NostrMailClient {
     this.pubkey = getPublicKey(secretKey);
     this.relays = relays;
     this.blossomServers = blossomServers.length > 0 ? blossomServers : [...DEFAULT_BLOSSOM_SERVERS];
-    this.pool = new SimplePool({ 
-      enablePing: true, 
+    this.pool = new SimplePool({
+      enablePing: true,
       enableReconnect: true,
     });
     this.pool.automaticallyAuth = () => async (authEvent: any) => {
@@ -52,7 +52,7 @@ export class NostrMailClient {
     };
     this.parser = new EmailParser();
     this.composer = new EmailComposer();
-    
+
     if (relays.length > 0) {
       this.relaysInitialized = true;
     }
@@ -123,12 +123,12 @@ export class NostrMailClient {
   async sendEmail(options: SendEmailOptions): Promise<void> {
     await this.ensureRelays();
     const fromAddress = `${nip19.npubEncode(this.pubkey)}@nostr`;
-    
+
     // Use provided MIME or compose a new one
     const mime = options.mime || this.composer.composeMime(options, fromAddress);
 
     const recipient = await this.resolveRecipient(options.to);
-    
+
     const emailEvent: any = {
       kind: 1301,
       created_at: Math.floor(Date.now() / 1000),
@@ -146,7 +146,7 @@ export class NostrMailClient {
     const mimeBytes = new TextEncoder().encode(mime);
     if (mimeBytes.length >= 60000 && this.blossomServers.length > 0) {
       const { encrypted, key, nonce, hash } = await encryptAESGCM(mimeBytes);
-      
+
       let uploadSuccessful = false;
       const uploadErrors: string[] = [];
 
@@ -173,14 +173,14 @@ export class NostrMailClient {
 
     // Handle bridge specific tags if it's an external email
     if (recipient.isBridge) {
-       emailEvent.tags.push(['mail-from', fromAddress]);
-       const recipients = Array.isArray(options.to) ? options.to : [options.to];
-       recipients.forEach(r => emailEvent.tags.push(['rcpt-to', r]));
+      emailEvent.tags.push(['mail-from', fromAddress]);
+      const recipients = Array.isArray(options.to) ? options.to : [options.to];
+      recipients.forEach(r => emailEvent.tags.push(['rcpt-to', r]));
     }
 
     // Gift wrap for privacy (NIP-59)
     const wrappedEvent = wrapEvent(emailEvent, this.secretKey, recipient.pubkey);
-    
+
     // MAXIMIZE DELIVERABILITY: Discover recipient relays
     const targetRelays = new Set<string>([...this.relays, ...DEFAULT_DM_RELAYS]);
 
@@ -217,6 +217,26 @@ export class NostrMailClient {
 
 
   /**
+   * Parse a Gift Wrap event into an Email object.
+   * Handles NIP-59 unwrapping, Blossom content resolution and parsing.
+   */
+  async fromGiftWrap(giftWrap: any, skipLabels: boolean = false): Promise<Email | null> {
+    try {
+      const unwrapped = unwrapEvent(giftWrap, this.secretKey);
+      if (unwrapped.kind !== 1301) {
+        return null;
+      }
+
+      const fullEvent = await this.ensureMimeContent(unwrapped as any);
+      const labels = skipLabels ? [] : await this.getLabelsForEvent(unwrapped.id);
+
+      return await this.parser.parse(unwrapped as any, labels, fullEvent.content, giftWrap.id);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * Listen for incoming emails in real-time.
    */
   onEmail(callback: (email: Email) => void) {
@@ -225,7 +245,7 @@ export class NostrMailClient {
 
     this.ensureRelays().then(() => {
       if (closed) return;
-      
+
       const filter: Filter = {
         kinds: [1059], // Gift wraps
         '#p': [this.pubkey],
@@ -234,17 +254,8 @@ export class NostrMailClient {
       sub = this.pool.subscribeMany(this.relays, filter, {
         ...this.getAuthParams(),
         onevent: async (wrappedEvent) => {
-          try {
-            const unwrapped = unwrapEvent(wrappedEvent, this.secretKey);
-            if (unwrapped.kind === 1301) {
-              const fullEvent = await this.ensureMimeContent(unwrapped as any);
-              const labels = await this.getLabelsForEvent(unwrapped.id);
-              const email = await this.parser.parse(unwrapped as any, labels, fullEvent.content, wrappedEvent.id);
-              callback(email);
-            }
-          } catch (e) {
-            // Could be a gift wrap not for us or not an email
-          }
+          const email = await this.fromGiftWrap(wrappedEvent);
+          if (email) callback(email);
         }
       });
     });
@@ -260,7 +271,7 @@ export class NostrMailClient {
    */
   async listEmails(): Promise<Email[]> {
     await this.ensureRelays();
-    
+
     const emailFilter: Filter = {
       kinds: [1059],
       '#p': [this.pubkey],
@@ -299,16 +310,8 @@ export class NostrMailClient {
     const emails: Email[] = [];
     for (const wrapped of wrappedEvents) {
       if (deletedIds.has(wrapped.id)) continue;
-
-      try {
-        const unwrapped = unwrapEvent(wrapped, this.secretKey);
-        if (unwrapped.kind === 1301) {
-          const fullEvent = await this.ensureMimeContent(unwrapped as any);
-          const labels = await this.getLabelsForEvent(unwrapped.id);
-          const email = await this.parser.parse(unwrapped as any, labels, fullEvent.content, wrapped.id);
-          emails.push(email);
-        }
-      } catch (e) {}
+      const email = await this.fromGiftWrap(wrapped);
+      if (email) emails.push(email);
     }
 
     return emails.sort((a, b) => b.date.getTime() - a.date.getTime());
@@ -317,7 +320,7 @@ export class NostrMailClient {
   /**
    * Ensure the event has its MIME content (download from Blossom if needed).
    */
-  private async ensureMimeContent(event: any): Promise<any> {
+  public async ensureMimeContent(event: any): Promise<any> {
     if (event.content) return event;
 
     const xTag = event.tags.find((t: any[]) => t[0] === 'x');
@@ -326,7 +329,7 @@ export class NostrMailClient {
 
     if (xTag && keyTag && nonceTag && this.blossomServers.length > 0) {
       const hash = xTag[1];
-      
+
       for (const server of this.blossomServers) {
         try {
           const blossom = createBlossomClient(server, this.secretKey);
@@ -356,7 +359,7 @@ export class NostrMailClient {
 
     try {
       const labelEvents = await this.pool.querySync(this.relays, filter);
-      return labelEvents.flatMap(ev => 
+      return labelEvents.flatMap(ev =>
         ev.tags.filter(t => t[0] === 'l' && t[2] === 'mail').map(t => t[1])
       );
     } catch (e) {
@@ -392,10 +395,10 @@ export class NostrMailClient {
    */
   async deleteEmail(email: Email, reason: string = ''): Promise<void> {
     await this.ensureRelays();
-    
+
     // 1. Collect all IDs to delete from relays
     const idsToDelete: { id: string, kind: number }[] = [];
-    
+
     // The main email event (Gift Wrap or 1301)
     idsToDelete.push({
       id: email.giftWrapId || email.id,
@@ -409,7 +412,7 @@ export class NostrMailClient {
       '#e': [email.id],
       '#L': ['mail'],
     };
-    
+
     try {
       const labelEvents = await this.pool.querySync(this.relays, labelFilter);
       labelEvents.forEach(ev => idsToDelete.push({ id: ev.id, kind: 1985 }));
@@ -455,7 +458,7 @@ export class NostrMailClient {
    */
   async deleteEvent(eventId: string, reason: string = '', kind?: number): Promise<void> {
     await this.ensureRelays();
-    
+
     const tags = [['e', eventId]];
     if (kind !== undefined) {
       tags.push(['k', kind.toString()]);
@@ -476,7 +479,7 @@ export class NostrMailClient {
    */
   private async resolveRecipient(to: string | string[]): Promise<{ pubkey: string, isBridge: boolean }> {
     const firstRecipient = Array.isArray(to) ? to[0] : to;
-    
+
     // 1. npub
     if (firstRecipient.startsWith('npub1')) {
       const { data } = nip19.decode(firstRecipient);
@@ -485,12 +488,12 @@ export class NostrMailClient {
 
     // 2. Email address (needs bridge)
     if (firstRecipient.includes('@') && !firstRecipient.endsWith('@nostr')) {
-       const domain = firstRecipient.split('@')[1];
-       const bridgeProfile = await nip05.queryProfile(`_smtp@${domain}`);
-       if (!bridgeProfile || !bridgeProfile.pubkey) {
-         throw new Error(`Could not resolve bridge for domain ${domain}`);
-       }
-       return { pubkey: bridgeProfile.pubkey, isBridge: true };
+      const domain = firstRecipient.split('@')[1];
+      const bridgeProfile = await nip05.queryProfile(`_smtp@${domain}`);
+      if (!bridgeProfile || !bridgeProfile.pubkey) {
+        throw new Error(`Could not resolve bridge for domain ${domain}`);
+      }
+      return { pubkey: bridgeProfile.pubkey, isBridge: true };
     }
 
     // 3. Hex pubkey
