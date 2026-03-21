@@ -4,6 +4,7 @@ import {
 } from 'nostr-tools/pure';
 import { SimplePool, useWebSocketImplementation } from 'nostr-tools/pool';
 import { Filter } from 'nostr-tools/filter';
+import { normalizeURL } from 'nostr-tools/utils';
 import * as nip19 from 'nostr-tools/nip19';
 import * as nip05 from 'nostr-tools/nip05';
 import {
@@ -182,25 +183,10 @@ export class NostrMailClient {
     const wrappedEvent = wrapEvent(emailEvent, this.secretKey, recipient.pubkey);
 
     // MAXIMIZE DELIVERABILITY: Discover recipient relays
-    const targetRelays = new Set<string>([...this.relays, ...DEFAULT_DM_RELAYS]);
-
-    try {
-      const recipientRelayEvents = await this.pool.querySync(BOOTSTRAP_RELAYS, {
-        kinds: [10002],
-        authors: [recipient.pubkey]
-      });
-      if (recipientRelayEvents.length > 0) {
-        const lastEvent = recipientRelayEvents.sort((a, b) => b.created_at - a.created_at)[0];
-        lastEvent.tags
-          .filter(t => t[0] === 'r')
-          .forEach(t => targetRelays.add(t[1]));
-      }
-    } catch (e) {
-      // Ignore discovery errors
-    }
+    const targetRelays = await this.getRecipientRelays(Array.isArray(options.to) ? options.to[0] : options.to);
 
     const publishPromises = [
-      ...this.pool.publish(Array.from(targetRelays), wrappedEvent, this.getAuthParams())
+      ...this.pool.publish(targetRelays, wrappedEvent, this.getAuthParams())
     ];
 
     // Also send a copy to ourselves if enabled (Sent folder / local copy)
@@ -213,6 +199,74 @@ export class NostrMailClient {
 
     // Wait for all to finish, ignoring individual relay errors (like rate-limiting)
     await Promise.allSettled(publishPromises);
+  }
+
+  /**
+   * Get the list of relays where an email will be sent for a given recipient.
+   * Priority: 
+   * 1. NIP-17 DM Relays (Kind 10050) - found by querying bootstrap + user's write relays
+   * 2. NIP-65 Relays (Kind 10002) - filtered for read
+   * 3. Default DM relays
+   * 4. Default relays
+   */
+  async getRecipientRelays(to: string): Promise<string[]> {
+    await this.ensureRelays();
+    const recipient = await this.resolveRecipient(to);
+
+    let nip65ReadRelays: string[] = [];
+    let nip65WriteRelays: string[] = [];
+
+    try {
+      // Step 1: Find NIP-65 (Kind 10002) to know where the user publishes their info
+      const nip65Events = await this.pool.querySync(BOOTSTRAP_RELAYS, {
+        kinds: [10002],
+        authors: [recipient.pubkey]
+      });
+
+      if (nip65Events.length > 0) {
+        const lastEvent = nip65Events.sort((a, b) => b.created_at - a.created_at)[0];
+        lastEvent.tags.filter(t => t[0] === 'r').forEach(t => {
+          const url = normalizeURL(t[1]);
+          const marker = t[2];
+          if (!marker || marker === 'read') nip65ReadRelays.push(url);
+          if (!marker || marker === 'write') nip65WriteRelays.push(url);
+        });
+      }
+
+      // Step 2: Query NIP-17 DM Relays (Kind 10050)
+      // We query bootstrap relays AND the user's specific write relays for maximum reliability
+      const discoveryRelays = Array.from(new Set([...BOOTSTRAP_RELAYS, ...nip65WriteRelays]));
+      const dmRelayEvents = await this.pool.querySync(discoveryRelays, {
+        kinds: [10050],
+        authors: [recipient.pubkey]
+      });
+
+      if (dmRelayEvents.length > 0) {
+        const lastEvent = dmRelayEvents.sort((a, b) => b.created_at - a.created_at)[0];
+        const relays = lastEvent.tags
+          .filter(t => t[0] === 'relay')
+          .map(t => normalizeURL(t[1]));
+        
+        if (relays.length > 0) return Array.from(new Set(relays));
+      }
+
+      // Step 3: Fallback to NIP-65 read relays
+      if (nip65ReadRelays.length > 0) {
+        return Array.from(new Set(nip65ReadRelays));
+      }
+
+    } catch (e) {
+      // Ignore discovery errors
+    }
+
+    // Final fallback to defaults
+    const fallbackRelays = new Set<string>();
+    DEFAULT_DM_RELAYS.forEach(url => fallbackRelays.add(normalizeURL(url)));
+    if (fallbackRelays.size === 0) {
+      DEFAULT_RELAYS.forEach(url => fallbackRelays.add(normalizeURL(url)));
+    }
+
+    return Array.from(fallbackRelays);
   }
 
 
