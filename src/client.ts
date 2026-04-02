@@ -143,9 +143,14 @@ export class NostrMailClient {
       content: mime,
     };
 
-    // Handle large emails (> 60KB) with Blossom storage
-    const mimeBytes = new TextEncoder().encode(mime);
-    if (mimeBytes.length >= 60000 && this.blossomServers.length > 0) {
+    // Handle large emails with Blossom storage.
+    // NIP-44 (used in Gift Wraps) has a strict limit of 65535 bytes for the plaintext (the JSON of the event).
+    // We calculate the actual byte size of the JSON event to decide if we need to use Blossom.
+    const encoder = new TextEncoder();
+    const jsonBytes = encoder.encode(JSON.stringify(emailEvent)).length;
+
+    if (jsonBytes >= 60000 && this.blossomServers.length > 0) {
+      const mimeBytes = encoder.encode(mime);
       const { encrypted, key, nonce, hash } = await encryptAESGCM(mimeBytes);
 
       let uploadSuccessful = false;
