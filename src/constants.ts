@@ -25,3 +25,10 @@ export const DEFAULT_BLOSSOM_SERVERS = [
   'https://blossom-02.uid.ovh',
   'https://blossom.primal.net',
 ];
+
+/**
+ * Maximum size of the JSON-encoded email event (rumor) before switching to Blossom storage.
+ * NIP-44 (used in Gift Wraps) has a limit of 65535 bytes for the plaintext.
+ * We use 32KB to allow for NIP-59 double wrapping overhead and JSON escaping.
+ */
+export const BLOSSOM_THRESHOLD = 32768;

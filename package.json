@@ -1,8 +1,7 @@
 {
   "name": "nostr-mail",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "A JavaScript library for Nostr-based email.",
-
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,8 +14,7 @@
     "prepublishOnly": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
-,
+    "test:coverage": "vitest run --coverage",
     "dev": "tsx src/index.ts"
   },
   "keywords": [

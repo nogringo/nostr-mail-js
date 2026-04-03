@@ -15,7 +15,7 @@ import { EmailParser } from './parser.js';
 import { EmailComposer } from './composer.js';
 import { Email, SendEmailOptions } from './types.js';
 import { encryptAESGCM, decryptAESGCM, createBlossomClient } from './blossom.js';
-import { BOOTSTRAP_RELAYS, DEFAULT_RELAYS, DEFAULT_BLOSSOM_SERVERS, DEFAULT_DM_RELAYS } from './constants.js';
+import { BOOTSTRAP_RELAYS, DEFAULT_RELAYS, DEFAULT_BLOSSOM_SERVERS, DEFAULT_DM_RELAYS, BLOSSOM_THRESHOLD } from './constants.js';
 
 /**
  * Automatically handle Node.js environment for WebSocket support.
@@ -144,12 +144,14 @@ export class NostrMailClient {
     };
 
     // Handle large emails with Blossom storage.
-    // NIP-44 (used in Gift Wraps) has a strict limit of 65535 bytes for the plaintext (the JSON of the event).
-    // We calculate the actual byte size of the JSON event to decide if we need to use Blossom.
+    // NIP-44 (used in Gift Wraps) has a strict limit of 65535 bytes for the plaintext.
+    // Because NIP-59 uses double wrapping (Rumor -> Seal -> Gift Wrap), and each 
+    // encryption step expands the size (Base64 + Padding), the initial Rumor JSON must be 
+    // significantly smaller than 64KB. A 32KB threshold is safe.
     const encoder = new TextEncoder();
     const jsonBytes = encoder.encode(JSON.stringify(emailEvent)).length;
 
-    if (jsonBytes >= 60000 && this.blossomServers.length > 0) {
+    if (jsonBytes >= BLOSSOM_THRESHOLD && this.blossomServers.length > 0) {
       const mimeBytes = encoder.encode(mime);
       const { encrypted, key, nonce, hash } = await encryptAESGCM(mimeBytes);
 
