@@ -562,6 +562,10 @@ export class NostrMailClient {
   }
 
   async close() {
-    this.pool.destroy();
+    try {
+      this.pool.destroy();
+    } catch (err) {
+      console.error(`Error destroying pool in NostrMailClient.close (ignored): ${err}`);
+    }
   }
 }
