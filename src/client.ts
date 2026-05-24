@@ -13,6 +13,7 @@ import {
 } from 'nostr-tools/nip59';
 import { EmailParser } from './parser.js';
 import { EmailComposer } from './composer.js';
+import { buildEmailRumor } from './email-rumor.js';
 import { Email, SendEmailOptions } from './types.js';
 import { encryptAESGCM, decryptAESGCM, createBlossomClient } from './blossom.js';
 import { BOOTSTRAP_RELAYS, DEFAULT_RELAYS, DEFAULT_BLOSSOM_SERVERS, DEFAULT_DM_RELAYS, BLOSSOM_THRESHOLD } from './constants.js';
@@ -130,23 +131,17 @@ export class NostrMailClient {
 
     const recipient = await this.resolveRecipient(options.to);
 
-    const emailEvent: any = {
-      kind: 1301,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [
-        ['p', recipient.pubkey],
-        ['subject', options.subject],
-        ['from', fromAddress],
-        ['to', Array.isArray(options.to) ? options.to.join(', ') : options.to],
-        ['date', Math.floor(Date.now() / 1000).toString()]
-      ],
-      content: mime,
-    };
+    const emailEvent = buildEmailRumor({
+      options,
+      fromAddress,
+      recipient,
+      mime,
+    });
 
     // Handle large emails with Blossom storage.
     // NIP-44 (used in Gift Wraps) has a strict limit of 65535 bytes for the plaintext.
-    // Because NIP-59 uses double wrapping (Rumor -> Seal -> Gift Wrap), and each 
-    // encryption step expands the size (Base64 + Padding), the initial Rumor JSON must be 
+    // Because NIP-59 uses double wrapping (Rumor -> Seal -> Gift Wrap), and each
+    // encryption step expands the size (Base64 + Padding), the initial Rumor JSON must be
     // significantly smaller than 64KB. A 32KB threshold is safe.
     const encoder = new TextEncoder();
     const jsonBytes = encoder.encode(JSON.stringify(emailEvent)).length;
@@ -179,15 +174,8 @@ export class NostrMailClient {
       emailEvent.tags.push(['x', hash]);
     }
 
-    // Handle bridge specific tags if it's an external email
-    if (recipient.isBridge) {
-      emailEvent.tags.push(['mail-from', fromAddress]);
-      const recipients = Array.isArray(options.to) ? options.to : [options.to];
-      recipients.forEach(r => emailEvent.tags.push(['rcpt-to', r]));
-    }
-
     // Gift wrap for privacy (NIP-59)
-    const wrappedEvent = wrapEvent(emailEvent, this.secretKey, recipient.pubkey);
+    const wrappedEvent = wrapEvent(emailEvent as any, this.secretKey, recipient.pubkey);
 
     // MAXIMIZE DELIVERABILITY: Discover recipient relays
     const targetRelays = await this.getRecipientRelays(Array.isArray(options.to) ? options.to[0] : options.to);
@@ -200,7 +188,7 @@ export class NostrMailClient {
     // Default to true as per NIP-17 usage
     const shouldCopy = options.selfCopy !== false;
     if (shouldCopy) {
-      const selfWrappedEvent = wrapEvent(emailEvent, this.secretKey, this.pubkey);
+      const selfWrappedEvent = wrapEvent(emailEvent as any, this.secretKey, this.pubkey);
       publishPromises.push(...this.pool.publish(this.relays, selfWrappedEvent, this.getAuthParams()));
     }
 

@@ -40,6 +40,15 @@ export interface SendEmailOptions {
   attachments?: Attachment[];
   selfCopy?: boolean; // Default to true, send a copy to oneself
   mime?: string; // Optional raw MIME content
+  /**
+   * Legacy SMTP sender address. Set when a bridge forwards an inbound
+   * SMTP email to a nostr user, per the spec:
+   * https://github.com/nogringo/nostr-mail/blob/main/nostrhub/nostr-mail-core.md
+   *
+   * When provided, the resulting rumor carries a `mail-from` tag with
+   * this value, and the outbound bridge auto-derivation is skipped.
+   */
+  mailFrom?: string;
 }
 
 export enum MailFolder {
