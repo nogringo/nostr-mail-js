@@ -1,6 +1,6 @@
 {
   "name": "nostr-mail",
-  "version": "0.3.5",
+  "version": "0.4.0",
   "description": "A JavaScript library for Nostr-based email.",
   "type": "module",
   "main": "./dist/index.js",

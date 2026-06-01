@@ -16,6 +16,7 @@ import { EmailComposer } from './composer.js';
 import { buildEmailRumor } from './email-rumor.js';
 import { Email, SendEmailOptions } from './types.js';
 import { encryptAESGCM, decryptAESGCM, createBlossomClient } from './blossom.js';
+import { resolveNostrPubkey } from './address.js';
 import { BOOTSTRAP_RELAYS, DEFAULT_RELAYS, DEFAULT_BLOSSOM_SERVERS, DEFAULT_DM_RELAYS, BLOSSOM_THRESHOLD } from './constants.js';
 
 /**
@@ -529,10 +530,10 @@ export class NostrMailClient {
   private async resolveRecipient(to: string | string[]): Promise<{ pubkey: string, isBridge: boolean }> {
     const firstRecipient = Array.isArray(to) ? to[0] : to;
 
-    // 1. npub
-    if (firstRecipient.startsWith('npub1')) {
-      const { data } = nip19.decode(firstRecipient);
-      return { pubkey: data as string, isBridge: false };
+    // 1. Direct Nostr address (hex, npub, base36, or local part of an email)
+    const pubkey = resolveNostrPubkey(firstRecipient);
+    if (pubkey) {
+      return { pubkey, isBridge: false };
     }
 
     // 2. Email address (needs bridge)
@@ -545,8 +546,7 @@ export class NostrMailClient {
       return { pubkey: bridgeProfile.pubkey, isBridge: true };
     }
 
-    // 3. Hex pubkey
-    return { pubkey: firstRecipient, isBridge: false };
+    throw new Error(`Could not resolve recipient: ${firstRecipient}`);
   }
 
   async close() {
