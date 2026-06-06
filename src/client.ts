@@ -19,6 +19,13 @@ import { encryptAESGCM, decryptAESGCM, createBlossomClient } from './blossom.js'
 import { resolveNostrPubkey } from './address.js';
 import { BOOTSTRAP_RELAYS, DEFAULT_RELAYS, DEFAULT_BLOSSOM_SERVERS, DEFAULT_DM_RELAYS, BLOSSOM_THRESHOLD } from './constants.js';
 
+export interface NostrMailClientOptions {
+  bootstrapRelays?: string[];
+  defaultRelays?: string[];
+  defaultDmRelays?: string[];
+  defaultBlossomServers?: string[];
+}
+
 /**
  * Automatically handle Node.js environment for WebSocket support.
  */
@@ -36,16 +43,28 @@ export class NostrMailClient {
   public parser: EmailParser;
   public composer: EmailComposer;
   private relays: string[];
-  private blossomServers: string[];
+  private bootstrapRelays: string[];
+  private defaultRelays: string[];
+  private defaultDmRelays: string[];
+  private defaultBlossomServers: string[];
   private secretKey: Uint8Array;
   public pubkey: string;
   private relaysInitialized: boolean = false;
 
-  constructor(secretKey: Uint8Array, relays: string[] = [], blossomServers: string[] = []) {
+  constructor(secretKey: Uint8Array, relaysOrOptions: string[] | NostrMailClientOptions = [], defaultBlossomServers: string[] = []) {
+    const options: NostrMailClientOptions = Array.isArray(relaysOrOptions) ? {} : relaysOrOptions;
+    const initialRelays = Array.isArray(relaysOrOptions) ? relaysOrOptions : [];
+    const hasDefaultBlossomServersOption = Object.prototype.hasOwnProperty.call(options, 'defaultBlossomServers');
+
     this.secretKey = secretKey;
     this.pubkey = getPublicKey(secretKey);
-    this.relays = relays;
-    this.blossomServers = blossomServers.length > 0 ? blossomServers : [...DEFAULT_BLOSSOM_SERVERS];
+    this.relays = [...initialRelays];
+    this.bootstrapRelays = options.bootstrapRelays ? [...options.bootstrapRelays] : [...BOOTSTRAP_RELAYS];
+    this.defaultRelays = options.defaultRelays ? [...options.defaultRelays] : [...DEFAULT_RELAYS];
+    this.defaultDmRelays = options.defaultDmRelays ? [...options.defaultDmRelays] : [...DEFAULT_DM_RELAYS];
+    this.defaultBlossomServers = hasDefaultBlossomServersOption
+      ? [...(options.defaultBlossomServers || [])]
+      : (defaultBlossomServers.length > 0 ? [...defaultBlossomServers] : [...DEFAULT_BLOSSOM_SERVERS]);
     this.pool = new SimplePool({
       enablePing: true,
       enableReconnect: true,
@@ -56,7 +75,7 @@ export class NostrMailClient {
     this.parser = new EmailParser();
     this.composer = new EmailComposer();
 
-    if (relays.length > 0) {
+    if (this.relays.length > 0) {
       this.relaysInitialized = true;
     }
   }
@@ -97,7 +116,7 @@ export class NostrMailClient {
     if (this.relays.length === 0) {
       // Try to find NIP-65 relays for this pubkey
       try {
-        const relayEvents = await this.pool.querySync(BOOTSTRAP_RELAYS, {
+        const relayEvents = await this.pool.querySync(this.bootstrapRelays, {
           kinds: [10002],
           authors: [this.pubkey]
         });
@@ -113,7 +132,7 @@ export class NostrMailClient {
       }
 
       if (this.relays.length === 0) {
-        this.relays = [...DEFAULT_RELAYS];
+        this.relays = [...this.defaultRelays];
       }
     }
 
@@ -147,32 +166,35 @@ export class NostrMailClient {
     const encoder = new TextEncoder();
     const jsonBytes = encoder.encode(JSON.stringify(emailEvent)).length;
 
-    if (jsonBytes >= BLOSSOM_THRESHOLD && this.blossomServers.length > 0) {
-      const mimeBytes = encoder.encode(mime);
-      const { encrypted, key, nonce, hash } = await encryptAESGCM(mimeBytes);
+    if (jsonBytes >= BLOSSOM_THRESHOLD) {
+      const blossomServers = await this.getBlossomServersForPubkey(this.pubkey);
+      if (blossomServers.length > 0) {
+        const mimeBytes = encoder.encode(mime);
+        const { encrypted, key, nonce, hash } = await encryptAESGCM(mimeBytes);
 
-      let uploadSuccessful = false;
-      const uploadErrors: string[] = [];
+        let uploadSuccessful = false;
+        const uploadErrors: string[] = [];
 
-      await Promise.all(this.blossomServers.map(async (server) => {
-        try {
-          const blossom = createBlossomClient(server, this.secretKey);
-          await blossom.uploadBlob(new Blob([encrypted as any]), 'application/octet-stream');
-          uploadSuccessful = true;
-        } catch (e: any) {
-          uploadErrors.push(`${server}: ${e.message}`);
+        await Promise.all(blossomServers.map(async (server) => {
+          try {
+            const blossom = createBlossomClient(server, this.secretKey);
+            await blossom.uploadBlob(new Blob([encrypted as any]), 'application/octet-stream');
+            uploadSuccessful = true;
+          } catch (e: any) {
+            uploadErrors.push(`${server}: ${e.message}`);
+          }
+        }));
+
+        if (!uploadSuccessful) {
+          throw new Error(`Failed to upload email to any Blossom server. Errors: ${uploadErrors.join(', ')}`);
         }
-      }));
 
-      if (!uploadSuccessful) {
-        throw new Error(`Failed to upload email to any Blossom server. Errors: ${uploadErrors.join(', ')}`);
+        emailEvent.content = '';
+        emailEvent.tags.push(['encryption-algorithm', 'aes-gcm']);
+        emailEvent.tags.push(['decryption-key', key]);
+        emailEvent.tags.push(['decryption-nonce', nonce]);
+        emailEvent.tags.push(['x', hash]);
       }
-
-      emailEvent.content = '';
-      emailEvent.tags.push(['encryption-algorithm', 'aes-gcm']);
-      emailEvent.tags.push(['decryption-key', key]);
-      emailEvent.tags.push(['decryption-nonce', nonce]);
-      emailEvent.tags.push(['x', hash]);
     }
 
     // Gift wrap for privacy (NIP-59)
@@ -207,6 +229,7 @@ export class NostrMailClient {
    */
   async getRecipientRelays(to: string): Promise<string[]> {
     await this.ensureRelays();
+
     const recipient = await this.resolveRecipient(to);
 
     let nip65ReadRelays: string[] = [];
@@ -214,7 +237,7 @@ export class NostrMailClient {
 
     try {
       // Step 1: Find NIP-65 (Kind 10002) to know where the user publishes their info
-      const nip65Events = await this.pool.querySync(BOOTSTRAP_RELAYS, {
+      const nip65Events = await this.pool.querySync(this.bootstrapRelays, {
         kinds: [10002],
         authors: [recipient.pubkey]
       });
@@ -231,7 +254,7 @@ export class NostrMailClient {
 
       // Step 2: Query NIP-17 DM Relays (Kind 10050)
       // We query bootstrap relays AND the user's specific write relays for maximum reliability
-      const discoveryRelays = Array.from(new Set([...BOOTSTRAP_RELAYS, ...nip65WriteRelays]));
+      const discoveryRelays = Array.from(new Set([...this.bootstrapRelays, ...nip65WriteRelays]));
       const dmRelayEvents = await this.pool.querySync(discoveryRelays, {
         kinds: [10050],
         authors: [recipient.pubkey]
@@ -257,12 +280,39 @@ export class NostrMailClient {
 
     // Final fallback to defaults
     const fallbackRelays = new Set<string>();
-    DEFAULT_DM_RELAYS.forEach(url => fallbackRelays.add(normalizeURL(url)));
+    this.defaultDmRelays.forEach(url => fallbackRelays.add(normalizeURL(url)));
     if (fallbackRelays.size === 0) {
-      DEFAULT_RELAYS.forEach(url => fallbackRelays.add(normalizeURL(url)));
+      this.defaultRelays.forEach(url => fallbackRelays.add(normalizeURL(url)));
     }
 
     return Array.from(fallbackRelays);
+  }
+
+  private async getBlossomServersForPubkey(pubkey: string): Promise<string[]> {
+    const discoveryRelays = Array.from(new Set([...this.bootstrapRelays, ...this.relays]));
+
+    if (discoveryRelays.length > 0) {
+      try {
+        const serverEvents = await this.pool.querySync(discoveryRelays, {
+          kinds: [10063],
+          authors: [pubkey],
+        });
+
+        if (serverEvents.length > 0) {
+          const lastEvent = serverEvents.sort((a, b) => b.created_at - a.created_at)[0];
+          const servers = lastEvent.tags
+            .filter(t => t[0] === 'server')
+            .map(t => t[1])
+            .filter(Boolean);
+
+          if (servers.length > 0) return Array.from(new Set(servers));
+        }
+      } catch (e) {
+        // Fallback to configured servers if discovery fails
+      }
+    }
+
+    return [...this.defaultBlossomServers];
   }
 
 
@@ -377,10 +427,11 @@ export class NostrMailClient {
     const keyTag = event.tags.find((t: any[]) => t[0] === 'decryption-key');
     const nonceTag = event.tags.find((t: any[]) => t[0] === 'decryption-nonce');
 
-    if (xTag && keyTag && nonceTag && this.blossomServers.length > 0) {
+    if (xTag && keyTag && nonceTag) {
       const hash = xTag[1];
+      const blossomServers = await this.getBlossomServersForPubkey(event.pubkey);
 
-      for (const server of this.blossomServers) {
+      for (const server of blossomServers) {
         try {
           const blossom = createBlossomClient(server, this.secretKey);
           const arrayBuffer = await blossom.download(hash);
@@ -488,9 +539,10 @@ export class NostrMailClient {
     // 3. Perform Blossom deletion if needed
     const blossomPromises: Promise<any>[] = [];
     const xTag = email.event.tags.find(t => t[0] === 'x');
-    if (xTag && this.blossomServers.length > 0) {
+    if (xTag) {
       const hash = xTag[1];
-      blossomPromises.push(...this.blossomServers.map(async (server) => {
+      const blossomServers = await this.getBlossomServersForPubkey(email.event.pubkey);
+      blossomPromises.push(...blossomServers.map(async (server) => {
         try {
           const blossom = createBlossomClient(server, this.secretKey);
           await blossom.delete(hash);

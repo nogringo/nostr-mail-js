@@ -37,6 +37,8 @@
     "@types/node": "^25.5.0",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.0",
+    "blossom-mock-server": "^0.1.0",
+    "nostr-mock-relay": "^0.1.1",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.0",
